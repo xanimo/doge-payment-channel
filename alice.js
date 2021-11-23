@@ -49,7 +49,7 @@ function jsonREST (method, url, data) {
     return response
   })
   .catch(function (error) {
-    console.log(error);
+    return error
   });
 }
 
@@ -83,10 +83,12 @@ async function main () {
   const locktime = Buffer.from(bip65.encode({ blocks: 300 }).toString(16), 'hex').reverse().toString('hex')
   
   result = await jsonREST('get', 'address/new')
-  const keyPairB = {
-    publicKey: result.data
-  }
+  // const keyPairB = {
+  //   "publicKey": result.data
+  // }
+  const keyPairB = result.data
   console.log(keyPairB)
+  const publicKeyB = keyPairB.publicKey.toString('hex')
 
   multisigScript = "OP_IF " + 
       locktime + "00" + " OP_CHECKLOCKTIMEVERIFY OP_DROP " +
@@ -163,24 +165,26 @@ async function main () {
     "ref": undefined,
     "psbt": psbt2.toHex()
   }
+
   result = await jsonREST('get', 'payment/new', data)
+  result ? '' : process.exit(0)
 
-  // psbt2.addOutputs([{
-  //     address: bitcoinjs.payments.p2pkh({ pubkey: keyPairA.publicKey }).address,
-  //     value: 89*100000000
-  // }, {
-  //     address: bitcoinjs.payments.p2pkh({ pubkey: keyPairB.publicKey }).address,
-  //     value: 10*100000000
-  // }])
+  psbt2.addOutputs([{
+      address: bitcoinjs.payments.p2pkh({ pubkey: keyPairA.publicKey }).address,
+      value: 89*100000000
+  }, {
+      address: bitcoinjs.payments.p2pkh({ pubkey: keyPairB['publicKey'] }).address,
+      value: 10*100000000
+  }])
 
-  // psbt2.signInput(0, keyPairA)
-  // psbt2.signInput(0, keyPairB)
+  psbt2.signInput(0, keyPairA)
+  psbt2.signInput(0, keyPairB)
 
-  // psbt2.finalizeInput(0, finalScriptsFunc)
+  psbt2.finalizeInput(0, finalScriptsFunc)
 
-  // console.log(psbt2.extractTransaction(true).toHex())
+  console.log(psbt2.extractTransaction(true).toHex())
 
-  // console.log('FIRST PAYMENT DONE!')
+  console.log('FIRST PAYMENT DONE!')
 
   // /*
   //   Create second payment (and broadcast it to close payment channel)
