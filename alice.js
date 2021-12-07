@@ -39,18 +39,12 @@ function jsonRPC (command, params) {
   })
 }
 
-function jsonREST (method, url, data) {
-	return axios({
+async function jsonREST (method, url, data) {
+	return await axios({
     method: method,
     url: `http://localhost:5000/api/v1/${url}`,
     data: data
   })
-  .then(function (response) {
-    return response
-  })
-  .catch(function (error) {
-    return error
-  });
 }
 
 async function main () {
@@ -81,19 +75,22 @@ async function main () {
   console.log('Create multisig p2sh address')
 
   const locktime = Buffer.from(bip65.encode({ blocks: 300 }).toString(16), 'hex').reverse().toString('hex')
-  
-  result = await jsonREST('get', 'address/new')
-  // const keyPairB = {
-  //   "publicKey": result.data
-  // }
-  const keyPairB = result.data
-  console.log(keyPairB)
-  const publicKeyB = keyPairB.publicKey.toString('hex')
 
+  result = await jsonREST('get', 'pubkey/new')
+  // keyPairB = {
+  //   publicKey: Buffer.from(result.data.pubkey, 'hex')
+  // }
+  // console.log(keyPairB.publicKey)
+  console.log('keyPairB', Buffer.from(result.data.pubkey, 'hex'))
+  const uncompressedHex = bitcoinjs.ECPair.fromPublicKey(
+    Buffer.from(result.data.pubkey, 'hex'),
+    { compressed: true },
+  ).publicKey.toString('hex')
+  console.log(uncompressedHex)
   multisigScript = "OP_IF " + 
       locktime + "00" + " OP_CHECKLOCKTIMEVERIFY OP_DROP " +
       keyPairA.publicKey.toString('hex') + " OP_CHECKSIGVERIFY OP_ELSE OP_2 OP_ENDIF " +
-      keyPairA.publicKey.toString('hex') + " " + keyPairB.publicKey.toString('hex') + " OP_2 OP_CHECKMULTISIG"
+      keyPairA.publicKey.toString('hex') + " " + uncompressedHex + " OP_2 OP_CHECKMULTISIG"
     
   const p2sh = bitcoinjs.payments.p2sh({
       redeem: { output: bitcoinjs.script.fromASM(multisigScript) },
@@ -104,7 +101,7 @@ async function main () {
 
   // Create initial transaction that funds a multisig
 	result = await jsonRPC('getrawtransaction', [txid])
-
+console.log('result: ', result)
   let transaction = await jsonRPC('decoderawtransaction', [result.data.result])
   let index = 0
   transaction.data.result.vout.map(function (output) {
@@ -144,82 +141,87 @@ async function main () {
   */
 
   // Alice: 89, Bob: 10, fee: 1
-  const psbt2 = new bitcoinjs.Psbt()
-
+  let psbt2 = new bitcoinjs.Psbt()
   // get raw transaction
 	result = await jsonRPC('getrawtransaction', [txidMultisig])
-  console.log(Buffer.from(result.data.result, 'hex').toString('hex'))
+  let tx2 = result.data.result
   psbt2.addInput({
     // if hash is string, txid, if hash is Buffer, is reversed compared to txid
     hash: txidMultisig,
     index: 0,
     // non-segwit inputs now require passing the whole previous tx as Buffer
-    nonWitnessUtxo: Buffer.from(result.data.result, 'hex'),
+    nonWitnessUtxo: Buffer.from(tx2, 'hex'),
     redeemScript: bitcoinjs.script.fromASM(multisigScript)
   })
 
-  console.log(psbt2.toHex())
+  psbt2.addOutputs([{
+    address: bitcoinjs.payments.p2pkh({ pubkey: keyPairA.publicKey }).address,
+    value: 89*100000000
+}, {
+    address: bitcoinjs.payments.p2pkh({ pubkey: Buffer.from(uncompressedHex, 'hex') }).address,
+    value: 10*100000000
+}])
 
+psbt2.signInput(0, keyPairA)
   let data = {
     "type": "announce",
     "ref": undefined,
     "psbt": psbt2.toHex()
   }
 
-  result = await jsonREST('get', 'payment/new', data)
-  result ? '' : process.exit(0)
-
-  psbt2.addOutputs([{
-      address: bitcoinjs.payments.p2pkh({ pubkey: keyPairA.publicKey }).address,
-      value: 89*100000000
-  }, {
-      address: bitcoinjs.payments.p2pkh({ pubkey: keyPairB['publicKey'] }).address,
-      value: 10*100000000
-  }])
-
-  psbt2.signInput(0, keyPairA)
-  psbt2.signInput(0, keyPairB)
+  result = await jsonREST('post', 'payment', data)
+  console.log(result)
+  console.log(result.data.psbt)
+  console.log(result.data.psbtVdn.status)
+  psbt2 = bitcoinjs.Psbt.fromHex(result.data.psbt)
 
   psbt2.finalizeInput(0, finalScriptsFunc)
 
-  console.log(psbt2.extractTransaction(true).toHex())
-
   console.log('FIRST PAYMENT DONE!')
 
-  // /*
-  //   Create second payment (and broadcast it to close payment channel)
-  // */
+  /*
+    Create second payment (and broadcast it to close payment channel)
+  */
+  console.log(psbt2.data.toHex())
+  // Alice: 79, Bob: 20, fee: 1
+  let psbt3 = new bitcoinjs.Psbt()
+  psbt3.addInput({
+    // if hash is string, txid, if hash is Buffer, is reversed compared to txid
+    hash: txidMultisig,
+    index: 0,
+    // non-segwit inputs now require passing the whole previous tx as Buffer
+    nonWitnessUtxo: Buffer.from(tx2, 'hex'),
+    redeemScript: bitcoinjs.script.fromASM(multisigScript)
+  })
 
-  // // Alice: 79, Bob: 20, fee: 1
-  // const psbt3 = new bitcoinjs.Psbt()
+  psbt3.addOutputs([{
+      address: bitcoinjs.payments.p2pkh({ pubkey: keyPairA.publicKey }).address,
+      value: 79*100000000
+  }, {
+      address: bitcoinjs.payments.p2pkh({ pubkey: Buffer.from(uncompressedHex, 'hex') }).address,
+      value: 20*100000000
+  }])
 
-  // psbt3.addInput({
-  //   // if hash is string, txid, if hash is Buffer, is reversed compared to txid
-  //   hash: txidMultisig,
-  //   index: 0,
-  //   // non-segwit inputs now require passing the whole previous tx as Buffer
-  //   nonWitnessUtxo: Buffer.from(result.data.result, 'hex'),
-  //   redeemScript: bitcoinjs.script.fromASM(multisigScript)
-  // })
+  psbt3.signInput(0, keyPairA)
+  data = {
+    "type": "announce",
+    "ref": undefined,
+    "psbt": psbt3.toHex()
+  }
 
-  // psbt3.addOutputs([{
-  //     address: bitcoinjs.payments.p2pkh({ pubkey: keyPairA.publicKey }).address,
-  //     value: 79*100000000
-  // }, {
-  //     address: bitcoinjs.payments.p2pkh({ pubkey: keyPairB.publicKey }).address,
-  //     value: 20*100000000
-  // }])
+  result = await jsonREST('post', 'payment', data)
+  console.log(result)
+  console.log(result.data.psbt)
+  console.log(result.data.psbtVdn.status)
+  psbt3 = bitcoinjs.Psbt.fromHex(result.data.psbt)
 
-  // psbt3.signInput(0, keyPairA)
-  // psbt3.signInput(0, keyPairB)
+  psbt3.finalizeInput(0, finalScriptsFunc)
 
-  // psbt3.finalizeInput(0, finalScriptsFunc)
+  const finalTransaction = psbt3.extractTransaction(true).toHex()
+  console.log(finalTransaction)
+  await jsonRPC('sendrawtransaction', [finalTransaction])
 
-  // const finalTransaction = psbt3.extractTransaction(true).toHex()
-  // console.log(finalTransaction)
-  // await jsonRPC('sendrawtransaction', [finalTransaction])
-
-  // console.log('PAYMENT CHANNEL CLOSE!')
+  console.log('PAYMENT CHANNEL CLOSE!')
 
 	// await container.stop()
   // await container.remove()
